@@ -58,6 +58,8 @@ STEER_SCALE = 0.6    # fraction of the max angular velocity at full steering loc
 LIN_SLOP = 0.02      # max change of linear velocity per tick (20 Hz) = 0.4 m/s^2
 ANG_SLOP = 0.4       # max change of angular velocity per tick (20 Hz) = 8 rad/s^2
 
+DEBUG_PERIOD = 0.2   # seconds; at most one debug line per period (ROS parameter 'debug')
+
 MSG = """
 Control Your TurtleBot3 with the DualSense
 -----------------------------------------------------------
@@ -107,6 +109,13 @@ class TeleopDualSense(Node):
         self.target_ang = 0.0
         self.control_lin = 0.0
         self.control_ang = 0.0
+
+        # debug output: ros2 run ... teleop_dualsense --ros-args -p debug:=false to silence
+        self.declare_parameter('debug', True)
+        self.debug = self.get_parameter('debug').value
+        self.pedals = (0.0, 0.0, 0.0)   # throttle, brake, steer after deadzones
+        self.debug_last = 0.0
+        self.debug_prev = None
 
         # latest controller state received over UDP
         self.axes = []
@@ -175,6 +184,23 @@ class TeleopDualSense(Node):
                                     -self.max_lin, self.max_lin)
         self.target_ang = constrain(steer * self.max_ang * STEER_SCALE,
                                     -self.max_ang, self.max_ang)
+        self.pedals = (throttle, brake, steer)
+
+    def _debug_print(self):
+        now = time.monotonic()
+        if now - self.debug_last < DEBUG_PERIOD:
+            return
+        self.debug_last = now
+        throttle, brake, steer = self.pedals
+        line = (f'thr {throttle:4.2f}  brk {brake:4.2f}  steer {steer:+5.2f} | '
+                f'target {self.target_lin:+5.2f} m/s {self.target_ang:+5.2f} rad/s | '
+                f'cmd {self.control_lin:+5.2f} m/s {self.control_ang:+5.2f} rad/s')
+        if not all(self.rested.values()):
+            line += (f' | NOT ARMED (raw L2 {self._axis(AXIS_BRAKE):+.2f}, '
+                     f'R2 {self._axis(AXIS_THROTTLE):+.2f})')
+        if line != self.debug_prev:   # only print when something changed
+            print(line)
+            self.debug_prev = line
 
     def _stop(self):
         self.target_lin = self.target_ang = 0.0
@@ -213,6 +239,8 @@ class TeleopDualSense(Node):
         self.control_ang = make_simple_profile(
             self.control_ang, self.target_ang, ANG_SLOP)
         self._publish(self.control_lin, self.control_ang)
+        if self.debug:
+            self._debug_print()
 
     def shutdown(self):
         self._publish(0.0, 0.0)
