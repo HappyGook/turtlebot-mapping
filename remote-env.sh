@@ -26,6 +26,7 @@ fi
 
 # --- ROS 2 base installation ---
 source /opt/ros/humble/setup.bash
+[ -f "$HOME/ros2_ws/install/setup.bash" ] && source "$HOME/ros2_ws/install/setup.bash"
 
 # --- ROS / TurtleBot3 configuration (must match the robot) ---
 export ROS_DOMAIN_ID=54
