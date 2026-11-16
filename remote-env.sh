@@ -52,6 +52,10 @@ cat > "$CYCLONE_FILE" <<EOF
         <Peer address="${ROBOT_IP}"/>
       </Peers>
     </Discovery>
+      <Tracing>
+        <Verbosity>config</Verbosity>
+        <OutputFile>/tmp/cdds.log</OutputFile>
+      </Tracing>
   </Domain>
 </CycloneDDS>
 EOF

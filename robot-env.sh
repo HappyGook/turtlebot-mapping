@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # robot-env.sh - environment for the TurtleBot3 SBC (Raspberry Pi)
-# Usage (must be sourced, not executed):   source ~/robot_env.sh
+# Usage (must be sourced, not executed):   source ~/robot-env.sh
 # echo "source ~/robot-env.sh" >> ~/.bashrc <- so that it is always loaded
 
 # --- ROS 2 base installation ---
