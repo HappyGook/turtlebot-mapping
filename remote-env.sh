@@ -6,8 +6,7 @@
 #   source ~/remote-env.sh 192.168.1.42 enp0s1
 
 ROBOT_IP="$1"
-SELF_IP="$2"
-IFACE="${3:-enp0s1}"
+IFACE="${2:-enp0s1}"
 
 if [ -z "$ROBOT_IP" ]; then
     echo "Usage: source remote_env.sh <ROBOT_IP> [NETWORK_INTERFACE]"
@@ -37,6 +36,7 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 
 # --- CycloneDDS: unicast discovery, multicast off ---
 CYCLONE_FILE="$HOME/cyclonedds.xml"
+SELF_IP=$(ip -4 -o addr show "$IFACE" | awk '{print $4}' | cut -d/ -f1 | head -n1)
 cat > "$CYCLONE_FILE" <<EOF
 <CycloneDDS>
   <Domain>
