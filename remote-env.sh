@@ -6,7 +6,8 @@
 #   source ~/remote-env.sh 192.168.1.42 enp0s1
 
 ROBOT_IP="$1"
-IFACE="${2:-enp0s1}"
+SELF_IP="$2"
+IFACE="${3:-enp0s1}"
 
 if [ -z "$ROBOT_IP" ]; then
     echo "Usage: source remote_env.sh <ROBOT_IP> [NETWORK_INTERFACE]"
@@ -48,8 +49,10 @@ cat > "$CYCLONE_FILE" <<EOF
     <Discovery>
       <ParticipantIndex>auto</ParticipantIndex>
       <MaxAutoParticipantIndex>50</MaxAutoParticipantIndex>
-      <Peers>
-        <Peer address="${ROBOT_IP}"/>
+        <Peers>
+          <Peer address="localhost"/>
+          <Peer address="${SELF_IP}"/>
+          <Peer address="${ROBOT_IP}"/>
       </Peers>
     </Discovery>
       <Tracing>
