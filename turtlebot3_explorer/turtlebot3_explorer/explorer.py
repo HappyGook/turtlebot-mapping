@@ -239,9 +239,6 @@ class Explorer(Node):
         return free & near_unk
 
     def _find_frontiers(self):
-        vals, counts = np.unique(self.data, return_counts=True)
-        self.get_logger().info(f'map values: {dict(zip(vals.tolist(), counts.tolist()))}')
-
         if self.map_msg is None:
             self.get_logger().warn('Frontiers not found: map_msg is None')
             return []
@@ -251,6 +248,8 @@ class Explorer(Node):
             return []
         data, info = self._grid()
         res = info.resolution
+        vals, counts = np.unique(data, return_counts=True)
+        self.get_logger().info(f'map values: {dict(zip(vals.tolist(), counts.tolist()))}')
 
         # groups touching frontier cells into numbered clusters
         labels, n = ndimage.label(self._frontier_mask(data),
