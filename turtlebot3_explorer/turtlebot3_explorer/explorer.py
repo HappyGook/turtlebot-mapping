@@ -343,6 +343,7 @@ class Explorer(Node):
 
         raw = frontier_mask(data, self.free_max)
         reach = np.isfinite(dist)  # safe, drivable cells
+        self._dump_map(data, raw, reach, rxy, info)
 
         # frontier cells are often inside the wall-clearance zone, so accept
         # those within a few cells of the drivable region
@@ -435,6 +436,34 @@ class Explorer(Node):
         fut = client.call_async(req)
         rclpy.spin_until_future_complete(self, fut, timeout_sec=30.0)
         return fut.result()
+
+    def _dump_map(self, data, raw, reach, rxy, info):
+        res = info.resolution
+        rx = int((rxy[0] - info.origin.position.x) / res)
+        ry = int((rxy[1] - info.origin.position.y) / res)
+        rows = []
+        for y in range(data.shape[0] - 1, -1, -1):
+            row = ''
+            for x in range(data.shape[1]):
+                v = data[y, x]
+                if (x, y) == (rx, ry):
+                    c = 'R'
+                elif raw[y, x]:
+                    c = 'F'
+                elif reach[y, x]:
+                    c = 'o'
+                elif v < 0:
+                    c = ' '
+                elif v >= 65:
+                    c = '#'
+                elif v >= self.free_max:
+                    c = '+'
+                else:
+                    c = '.'
+                row += c
+            rows.append(row)
+        self.get_logger().info('map (top = +y):\n' + '\n'.join(rows),
+                               throttle_duration_sec=20.0)
 
 
 def main():
