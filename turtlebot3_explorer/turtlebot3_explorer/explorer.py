@@ -109,8 +109,8 @@ class Explorer(Node):
         self.declare_parameter('bounds', [-100.0, -100.0, 100.0, 100.0])
         self.declare_parameter('save_prefix', 'lab_map')
         self.declare_parameter('free_max', 50) # treat cells with more than this as occupied
-        self.declare_parameter('inflate_meters', 0.12)
-        self.declare_parameter('min_goal_dist_meters',0.3)
+        self.declare_parameter('inflate_meters', 0.1)
+        self.declare_parameter('min_goal_dist_meters',0.15)
         self.declare_parameter('goal_timeout_s', 60.0) # TODO: tune, max map building time = 20 min
         self.declare_parameter('max_repeat_goals', 3)  # same target picked N times -> blacklist
 
@@ -342,9 +342,19 @@ class Explorer(Node):
             return []
 
         raw = frontier_mask(data, self.free_max)
-        mask = raw & np.isfinite(dist)       # only drivable frontiers
+        reach = np.isfinite(dist)  # safe, drivable cells
+
+        # frontier cells are often inside the wall-clearance zone, so accept
+        # those within a few cells of the drivable region
+        snap = int(math.ceil(self.inflate_m / res)) + 2 # TODO: if robot drives through thin walls, reduce here
+        near = ndimage.binary_dilation(reach, structure=np.ones((3, 3)),
+                                       iterations=snap)
+        mask = raw & near
         labels, n = ndimage.label(mask, structure=np.ones((3, 3)))
         min_cells = max(1, int(self.min_frontier_m / res))
+
+        # for every cell: indices of the nearest drivable cell
+        _, (ny, nx) = ndimage.distance_transform_edt(~reach, return_indices=True)
 
         result = []
         for lbl in range(1, n + 1):
@@ -353,9 +363,10 @@ class Explorer(Node):
                 continue
             cx, cy = xs.mean(), ys.mean()
             k = np.argmin((xs - cx) ** 2 + (ys - cy) ** 2)
-            gx = origin[0] + (xs[k] + 0.5) * res
-            gy = origin[1] + (ys[k] + 0.5) * res
-            path_len = dist[ys[k], xs[k]]
+            sy, sx = ny[ys[k], xs[k]], nx[ys[k], xs[k]]  # snap to drivable cell
+            gx = origin[0] + (sx + 0.5) * res
+            gy = origin[1] + (sy + 0.5) * res
+            path_len = dist[sy, sx]
             if path_len < self.min_goal_dist:
                 continue
             if not self._allowed(gx, gy):
@@ -364,8 +375,8 @@ class Explorer(Node):
             result.append({'goal': (gx, gy), 'score': score})
 
         self.get_logger().info(
-            f'frontier cells: {int(raw.sum())} raw, {int(mask.sum())} reachable '
-            f'-> {n} clusters, {len(result)} usable')
+            f'frontier cells: {int(raw.sum())} raw, {int(mask.sum())} near drivable '
+            f'({int(reach.sum())} drivable cells) -> {n} clusters, {len(result)} usable')
         return result
 
     def _is_frontier_cell(self, x, y):
