@@ -136,7 +136,7 @@ class Explorer(Node):
     def _start_spin(self):
         self.state = State.SPIN
         goal = Spin.Goal()
-        goal.target_yaw = 0 # or 2.0 * math.pi
+        goal.target_yaw = 0.0 # or 2.0 * math.pi
         goal.time_allowance = Duration(seconds=20).to_msg()
         self.get_logger().info('initial spin')
         fut = self.spin_client.send_goal_async(goal)
