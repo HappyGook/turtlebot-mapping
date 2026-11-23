@@ -1,12 +1,19 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>turtlebot3_teleop_dualsense</name>
+  <name>turtlebot3_explorer</name>
   <version>0.1.0</version>
-  <description>Teleoperation node using a PS5 DualSense gamepad for TurtleBot3.</description>
-  <maintainer email="you@example.com">Your Name</maintainer>
+  <description>Autonomous exploration node using Nav2 command.</description>
+  <maintainer email="olegradzhabov@gmail.com">Oleg R.</maintainer>
   <license>Apache 2.0</license>
 
+  <depend>nav_msgs</depend>
+  <depend>nav2_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>action_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>cartographer_ros_msgs</depend>
+  <exec_depend>python3-scipy</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>rclpy</exec_depend>
 
