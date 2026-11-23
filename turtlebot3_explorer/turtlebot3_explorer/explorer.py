@@ -55,6 +55,7 @@ class Explorer(Node):
         # Use this to keep the robot inside the building (gaps in walls!).
         self.declare_parameter('bounds', [-100.0, -100.0, 100.0, 100.0])
         self.declare_parameter('save_prefix', 'lab_map')
+        self.declare_parameter('free_max', 50) # treat cells with more than this as occupied
 
         p = self.get_parameter
         self.robot_frame = p('robot_frame').value
@@ -64,6 +65,7 @@ class Explorer(Node):
         self.blacklist_radius = p('blacklist_radius_m').value
         self.initial_spin = p('initial_spin').value
         self.empty_ticks_needed = p('empty_ticks_to_finish').value
+        self.free_max = p('free_max').value
 
         b = list(p('bounds').value)
         if len(b) != 4:
@@ -227,7 +229,7 @@ class Explorer(Node):
 
     def _frontier_mask(self, data):
         """Free cells that have at least one unknown 4-neighbour."""
-        free =( data == FREE )
+        free = (data >= 0) & (data < self.free_max)
         unk = ( data == UNKNOWN )
         near_unk = np.zeros_like(unk)
         near_unk[1:, :] |= unk[:-1, :]
@@ -237,6 +239,9 @@ class Explorer(Node):
         return free & near_unk
 
     def _find_frontiers(self):
+        vals, counts = np.unique(self.data, return_counts=True)
+        self.get_logger().info(f'map values: {dict(zip(vals.tolist(), counts.tolist()))}')
+
         if self.map_msg is None:
             self.get_logger().warn('Frontiers not found: map_msg is None')
             return []
