@@ -238,9 +238,11 @@ class Explorer(Node):
 
     def _find_frontiers(self):
         if self.map_msg is None:
+            self.get_logger().warn('Frontiers not found: map_msg is None')
             return []
         rxy = self._robot_xy()
         if rxy is None:
+            self.get_logger().warn('Frontiers not found: coordinates could not be determined')
             return []
         data, info = self._grid()
         res = info.resolution
@@ -252,10 +254,12 @@ class Explorer(Node):
         # converts 30 cm minimum into cells, smaller clusters (cause noise) are dropped
         min_cells = max(1, int(self.min_frontier_m / res))
 
+        self.get_logger().info(f'Found {n} frontiers, min_cells={min_cells}')
         result = []
         for lbl in range(1, n + 1):
             ys, xs = np.nonzero(labels == lbl)
             if len(xs) < min_cells:
+                self.get_logger().warn(f'Frontier cluster {lbl} dropped: too small')
                 continue
             # goal = member cell closest to the cluster centroid
             cx, cy = xs.mean(), ys.mean()
@@ -267,6 +271,7 @@ class Explorer(Node):
             dist = math.hypot(gx - rxy[0], gy - rxy[1])
             score = dist - self.gain_weight * len(xs) * res   # lower = better
             result.append({'goal': (gx, gy), 'score': score})
+            self.get_logger().info(f'Frontier cluster {lbl} added: goal={gx},{gy}, score={score}')
         return result
 
     def _is_frontier_cell(self, x, y):
