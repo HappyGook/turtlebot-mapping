@@ -191,6 +191,12 @@ class Explorer(Node):
     def _tick_wait(self):
         if self.map_msg is None or self._robot_xy() is None:
             return
+
+        data, _ = self._grid()
+        if (data >= self.free_max).sum() < 20:      # no walls seen yet -> map not ready
+            self.get_logger().info('waiting for walls in the map ...',
+                                   throttle_duration_sec=5.0)
+            return
         if not self.nav_client.server_is_ready():
             self.get_logger().info('waiting for /navigate_to_pose ...',
                                    throttle_duration_sec=5.0)
