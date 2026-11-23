@@ -53,7 +53,7 @@ class Explorer(Node):
         self.declare_parameter('empty_ticks_to_finish', 3)    # robustness against flicker
         # [x_min, y_min, x_max, y_max] in map frame; empty = unbounded.
         # Use this to keep the robot inside the building (gaps in walls!).
-        self.declare_parameter('bounds', [0.0] * 0)
+        self.declare_parameter('bounds', [-100.0, -100.0, 100.0, 100.0])
         self.declare_parameter('save_prefix', 'lab_map')
 
         p = self.get_parameter
@@ -64,7 +64,18 @@ class Explorer(Node):
         self.blacklist_radius = p('blacklist_radius_m').value
         self.initial_spin = p('initial_spin').value
         self.empty_ticks_needed = p('empty_ticks_to_finish').value
-        self.bounds = list(p('bounds').value) # TODO: check bounds size
+
+        b = list(p('bounds').value)
+        if len(b) != 4:
+            raise ValueError('bounds must be [x_min, y_min, x_max, y_max]')
+        if any(b):  # not all zeros -> bounded
+            if not (b[0] < b[2] and b[1] < b[3]):
+                raise ValueError('bounds need x_min < x_max and y_min < y_max')
+            self.bounds = b
+        else:
+            self.bounds = []   # treated as unbounded
+        self.get_logger().info(f'Bounds set to: {self.bounds}')
+
         self.save_prefix = p('save_prefix').value
 
         # ---- ROS interfaces ---------------------------------------------
