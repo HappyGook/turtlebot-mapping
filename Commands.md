@@ -11,7 +11,7 @@ source ~/turtlebot3_ws/turtlebot-mapping/cyclo-robot-env.sh # sets peer in cyclo
 ## Scripts on Robot
 
 - Basic launch (for teleop, cartographer, etc.)
-```
+```shell
 ros2 launch turtlebot3_bringup robot.launch.py
 ```
 
@@ -47,4 +47,26 @@ python3 run dualsense_sender.py <VM-IP> --port 9999
 ### View the topics + visualiser + etc.
 ```shell
 rqt
+```
+
+### Cartographer node
+```shell
+ros2 launch turtlebot3_cartographer cartographer.launch.py use_sim_time:=False
+
+# Map saver (requires running cartographer)
+ros2 run nav2_map_server map_saver_cli -f ~/maps/<name> # name w/o format!
+```
+
+### Nav2 node
+```shell
+ros2 launch nav2_bringup navigation_launch.py use_sim_time:=False map:=$HOME/maps/<map-file>
+```
+
+### Explorer node
+(Example params)
+```
+ros2 run turtlebot3_explorer explorer --ros-args   \
+    -p robot_frame:=base_footprint   \
+    -p bounds:="[-1.0,-1.0,5.0,4.0]" \ 
+    -p save_prefix:=/abs/path/maps/<name>
 ```
