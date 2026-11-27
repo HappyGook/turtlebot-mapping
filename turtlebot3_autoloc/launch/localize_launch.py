@@ -1,7 +1,7 @@
 """Start TurtleBot3 Nav2 (map_server + AMCL + navigation + RViz) and auto-localize.
 
 Usage:
-  ros2 launch tb3_autoloc localize_launch.py map:=$HOME/maps/lab.yaml
+  ros2 launch turtlebot3_autoloc localize_launch.py map:=$HOME/maps/lab.yaml
 """
 
 import os
@@ -25,7 +25,7 @@ def generate_launch_description():
     )
 
     auto_localize = Node(
-        package='tb3_autoloc',
+        package='turtlebot3_autoloc',
         executable='auto_localize',
         output='screen',
     )
