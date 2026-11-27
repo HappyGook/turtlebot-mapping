@@ -2,7 +2,7 @@ from glob import glob
 
 from setuptools import setup
 
-package_name = 'tuertlebot3_autoloc'
+package_name = 'turtlebot3_autoloc'
 
 setup(
     name=package_name,
