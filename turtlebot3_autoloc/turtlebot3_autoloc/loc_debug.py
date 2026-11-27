@@ -274,6 +274,22 @@ class LocalizationDebugger:
             f'[dbg] scan beams: {finite.sum()}/{len(r)} valid, {used.sum()} inside AMCL range '
             f'({100.0 * used.sum() / max(len(r), 1):.0f}%), median valid range '
             f'{np.median(r[finite]) if finite.any() else float("nan"):.2f} m')
+        # range histogram + where the very short returns are (self-occlusion check)
+        edges = [0.0, 0.15, 0.3, 0.5, 1.0, 1.5, 2.5, 3.5, np.inf]
+        hist, _ = np.histogram(r[finite], bins=edges)
+        self.log.info('[dbg] scan range histogram: ' + ', '.join(
+            f'{lo:g}-{hi:g} m: {n}' for lo, hi, n in zip(edges[:-1], edges[1:], hist)))
+        ang = s.angle_min + np.arange(len(r)) * s.angle_increment
+        near = finite & (r < 0.3)
+        if near.any():
+            sectors = np.unique(np.floor(((ang[near] % (2 * np.pi)) / (np.pi / 4))).astype(int))
+            self.log.info(f'[dbg] {near.sum()} beams < 0.3 m, in {len(sectors)}/8 '
+                          f'45-deg sectors {sectors.tolist()} (0 = straight ahead, CCW)')
+            if near.sum() > 0.3 * finite.sum():
+                self.log.warn(
+                    '[dbg] most beams hit something within 0.3 m -> the lidar is probably '
+                    'seeing the robot itself (camera / mount / cables) or the robot is boxed '
+                    'in. Such returns turn with the robot and carry no map information.')
         if used.sum() < 0.2 * len(r):
             self.log.warn(
                 f'[dbg] only {used.sum()} beams are shorter than {rmax:.2f} m -> AMCL gets '
@@ -420,7 +436,9 @@ class LocalizationDebugger:
                 f'y {math.sqrt(cov[7]):.2f} yaw {math.degrees(math.sqrt(cov[35])):.0f} deg')
 
         self.snapshots.append({'step': step, 'label': label, 't': now, 'particles': pts,
-                               'pose': self._pose_tuple()})
+                               'pose': self._pose_tuple(), 'odom_yaw': self.odom_yaw,
+                               'scan': None if self.scan is None else
+                               np.array(self.scan.ranges, dtype=np.float32)})
         self._save_png(f'step_{step:03d}', f'step {step} {label}', pts)
 
         if step == 0:
@@ -646,6 +664,11 @@ class LocalizationDebugger:
     def finish(self, localized):
         self.diagnose('final (localized)' if localized else 'final (NOT localized)')
         data = {f'particles_{i:03d}': s['particles'] for i, s in enumerate(self.snapshots)}
+        data.update({f'scan_{i:03d}': s['scan'] for i, s in enumerate(self.snapshots)
+                     if s['scan'] is not None})
+        if self.scan is not None:
+            data['scan_angles'] = (self.scan.angle_min + np.arange(len(self.scan.ranges))
+                                   * self.scan.angle_increment)
         if self.map is not None:
             data['map'] = self.map.data
         meta = {
@@ -653,7 +676,7 @@ class LocalizationDebugger:
             'truth': self.truth,
             'map_origin': None if self.map is None else
             [self.map.ox, self.map.oy, self.map.res],
-            'snapshots': [{k: v for k, v in s.items() if k != 'particles'}
+            'snapshots': [{k: v for k, v in s.items() if k not in ('particles', 'scan')}
                           for s in self.snapshots],
             'diagnoses': self.diagnoses,
             'collapsed_at_step': self.collapsed_at,

@@ -39,7 +39,7 @@ class AutoLocalize(Node):
         self.declare_parameter('turns_before_rescatter', 3)
         self.declare_parameter('timeout', 180.0)          # s
         # AMCL tuning (<= 0 keeps AMCL's own value)
-        self.declare_parameter('laser_max_range', 1.5)    # m
+        self.declare_parameter('laser_max_range', 3.5)    # m
         self.declare_parameter('max_particles', 10000)
         self.declare_parameter('min_particles', 2000)
         self.declare_parameter('recovery_alpha_slow', 0.001)
@@ -129,6 +129,7 @@ class AutoLocalize(Node):
     def tune_amcl(self):
         wanted = [
             ('laser_max_range', Parameter.Type.DOUBLE, float(self.p('laser_max_range'))),
+            ('laser_min_range', Parameter.Type.DOUBLE, float(self.p('laser_min_range'))),
             ('max_particles', Parameter.Type.INTEGER, int(self.p('max_particles'))),
             ('min_particles', Parameter.Type.INTEGER, int(self.p('min_particles'))),
             ('recovery_alpha_slow', Parameter.Type.DOUBLE, float(self.p('recovery_alpha_slow'))),
