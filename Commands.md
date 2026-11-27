@@ -68,5 +68,7 @@ ros2 launch nav2_bringup navigation_launch.py use_sim_time:=False map:=$HOME/map
 ros2 run turtlebot3_explorer explorer --ros-args   \
     -p robot_frame:=base_footprint   \
     -p bounds:="[-1.0,-1.0,5.0,4.0]" \ 
-    -p save_prefix:=/abs/path/maps/<name>
+    -p save_prefix:=~/maps/<name>
 ```
+
+ros2 run turtlebot3_explorer explorer --ros-args -p robot_frame:=base_footprint -p bounds:="[-1.0,-1.0,5.0,4.0]" -p save_prefix:=/abs/path/maps/lab-map-27-11
