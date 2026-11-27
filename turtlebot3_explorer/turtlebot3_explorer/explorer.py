@@ -61,7 +61,7 @@ def reachable_distance(data,res , origin_xy, start_xy, free_max, distance):
     if not (0 <= delta_x<width and 0 <= delta_y<height):
         return None
 
-    r = max(1, int(math.ceil(distance/res)))
+    r = max(0, int(math.ceil(distance/res)))
     yy,xx = np.ogrid[-r:r+1, -r:r+1]
     disc = (xx * xx + yy * yy) <= r * r
     blocked = ndimage.binary_dilation(data >= free_max, structure=disc)
@@ -338,53 +338,51 @@ class Explorer(Node):
             self.get_logger().warn('Frontiers not found: coordinates could not be determined')
             return []
         data, info = self._grid()
-        res = info.resolution
-        origin = (info.origin.position.x, info.origin.position.y)
+        for clearance in (self.inflate_m, 0.0):
+            res = info.resolution
+            origin = (info.origin.position.x, info.origin.position.y)
 
-        dist = reachable_distance(data, res, origin, rxy,
-                                  self.free_max, self.inflate_m)
-        if dist is None:
-            self.get_logger().warn('Frontiers not found: robot outside map')
-            return []
+            dist = reachable_distance(data, res, origin, rxy, self.free_max, clearance)
+            if dist is None:
+                self.get_logger().warn('Frontiers not found: robot outside map')
+                return []
 
-        raw = frontier_mask(data, self.free_max)
-        reach = np.isfinite(dist)  # safe, drivable cells
-        self._dump_map(data, raw, reach, rxy, info)
+            raw = frontier_mask(data, self.free_max)
+            reach = np.isfinite(dist)
+            snap = int(math.ceil(clearance / res)) + 2
+            near = ndimage.binary_dilation(reach, structure=np.ones((3, 3)), iterations=snap)
+            mask = raw & near
+            labels, n = ndimage.label(mask, structure=np.ones((3, 3)))
+            min_cells = max(1, int(self.min_frontier_m / res))
+            _, (ny, nx) = ndimage.distance_transform_edt(~reach, return_indices=True)
 
-        # frontier cells are often inside the wall-clearance zone, so accept
-        # those within a few cells of the drivable region
-        snap = int(math.ceil(self.inflate_m / res)) + 2 # TODO: if robot drives through thin walls, reduce here
-        near = ndimage.binary_dilation(reach, structure=np.ones((3, 3)),
-                                       iterations=snap)
-        mask = raw & near
-        labels, n = ndimage.label(mask, structure=np.ones((3, 3)))
-        min_cells = max(1, int(self.min_frontier_m / res))
+            result = []
+            for lbl in range(1, n + 1):
+                ys, xs = np.nonzero(labels == lbl)
+                if len(xs) < min_cells:
+                    continue
+                cx, cy = xs.mean(), ys.mean()
+                k = np.argmin((xs - cx) ** 2 + (ys - cy) ** 2)
+                sy, sx = ny[ys[k], xs[k]], nx[ys[k], xs[k]]
+                gx = origin[0] + (sx + 0.5) * res
+                gy = origin[1] + (sy + 0.5) * res
+                path_len = dist[sy, sx]
+                if path_len < self.min_goal_dist:
+                    continue
+                if not self._allowed(gx, gy):
+                    continue
+                score = path_len - self.gain_weight * len(xs) * res
+                result.append({'goal': (gx, gy), 'score': score})
 
-        # for every cell: indices of the nearest drivable cell
-        _, (ny, nx) = ndimage.distance_transform_edt(~reach, return_indices=True)
-
-        result = []
-        for lbl in range(1, n + 1):
-            ys, xs = np.nonzero(labels == lbl)
-            if len(xs) < min_cells:
-                continue
-            cx, cy = xs.mean(), ys.mean()
-            k = np.argmin((xs - cx) ** 2 + (ys - cy) ** 2)
-            sy, sx = ny[ys[k], xs[k]], nx[ys[k], xs[k]]  # snap to drivable cell
-            gx = origin[0] + (sx + 0.5) * res
-            gy = origin[1] + (sy + 0.5) * res
-            path_len = dist[sy, sx]
-            if path_len < self.min_goal_dist:
-                continue
-            if not self._allowed(gx, gy):
-                continue
-            score = path_len - self.gain_weight * len(xs) * res   # lower = better
-            result.append({'goal': (gx, gy), 'score': score})
-
-        self.get_logger().info(
-            f'frontier cells: {int(raw.sum())} raw, {int(mask.sum())} near drivable '
-            f'({int(reach.sum())} drivable cells) -> {n} clusters, {len(result)} usable')
-        return result
+            self.get_logger().info(
+                f'[clearance {clearance:.2f} m] frontier cells: {int(raw.sum())} raw, '
+                f'{int(mask.sum())} near drivable ({int(reach.sum())} drivable) '
+                f'-> {n} clusters, {len(result)} usable')
+            if result:
+                if clearance != self.inflate_m:
+                    self.get_logger().warn('no frontier with normal clearance -> relaxed to 0 m')
+                return result
+        return []
 
     def _is_frontier_cell(self, x, y):
         data, info = self._grid()
