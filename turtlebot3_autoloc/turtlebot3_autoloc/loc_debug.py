@@ -287,9 +287,8 @@ class LocalizationDebugger:
                           f'45-deg sectors {sectors.tolist()} (0 = straight ahead, CCW)')
             if near.sum() > 0.3 * finite.sum():
                 self.log.warn(
-                    '[dbg] most beams hit something within 0.3 m -> the lidar is probably '
-                    'seeing the robot itself (camera / mount / cables) or the robot is boxed '
-                    'in. Such returns turn with the robot and carry no map information.')
+                    '[dbg] most beams hit something within 0.3 m: fine inside a narrow hall, '
+                    'but check in RViz that these walls exist in the map')
         if used.sum() < 0.2 * len(r):
             self.log.warn(
                 f'[dbg] only {used.sum()} beams are shorter than {rmax:.2f} m -> AMCL gets '

@@ -40,6 +40,14 @@ class AutoLocalize(Node):
         self.declare_parameter('timeout', 180.0)          # s
         # AMCL tuning (<= 0 keeps AMCL's own value)
         self.declare_parameter('laser_max_range', 3.5)    # m
+        self.declare_parameter('laser_min_range', -1.0)   # m, halls are 30-60 cm: keep close hits
+        # Likelihood-field sensor model. AMCL's defaults (sigma_hit 0.2, z_hit/z_rand 0.5)
+        # are blurrier than the 30-60 cm halls: with them almost every pose in the box
+        # maze "fits" and the heading never resolves (last run: uniform headings).
+        self.declare_parameter('sigma_hit', 0.06)         # m, ~1 map cell + lidar noise
+        self.declare_parameter('z_hit', 0.85)
+        self.declare_parameter('z_rand', 0.15)
+        self.declare_parameter('laser_likelihood_max_dist', 0.5)  # m
         self.declare_parameter('max_particles', 10000)
         self.declare_parameter('min_particles', 2000)
         self.declare_parameter('recovery_alpha_slow', 0.001)
@@ -130,6 +138,11 @@ class AutoLocalize(Node):
         wanted = [
             ('laser_max_range', Parameter.Type.DOUBLE, float(self.p('laser_max_range'))),
             ('laser_min_range', Parameter.Type.DOUBLE, float(self.p('laser_min_range'))),
+            ('sigma_hit', Parameter.Type.DOUBLE, float(self.p('sigma_hit'))),
+            ('z_hit', Parameter.Type.DOUBLE, float(self.p('z_hit'))),
+            ('z_rand', Parameter.Type.DOUBLE, float(self.p('z_rand'))),
+            ('laser_likelihood_max_dist', Parameter.Type.DOUBLE,
+             float(self.p('laser_likelihood_max_dist'))),
             ('max_particles', Parameter.Type.INTEGER, int(self.p('max_particles'))),
             ('min_particles', Parameter.Type.INTEGER, int(self.p('min_particles'))),
             ('recovery_alpha_slow', Parameter.Type.DOUBLE, float(self.p('recovery_alpha_slow'))),
