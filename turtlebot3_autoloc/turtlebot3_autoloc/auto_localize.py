@@ -16,7 +16,9 @@ import time
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from rclpy.qos import qos_profile_sensor_data
 from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
+from nav2_msgs.msg import ParticleCloud
 from rcl_interfaces.srv import SetParameters
 from std_srvs.srv import Empty
 
@@ -29,36 +31,41 @@ class AutoLocalize(Node):
         self.declare_parameter('angular_speed', 0.4)      # rad/s while turning
         self.declare_parameter('step_angle', 0.785)       # rad per step (45 deg)
         self.declare_parameter('pause', 1.0)              # s standing still per step
-        self.declare_parameter('updates_per_stop', 3)     # forced AMCL updates per stop
-        self.declare_parameter('laser_max_range', 1.5)    # m, <= 0 keeps AMCL's value
-        self.declare_parameter('timeout', 90.0)           # s
+        self.declare_parameter('updates_per_stop', 2)     # forced AMCL updates per stop
+        # convergence
         self.declare_parameter('max_xy_std', 0.15)        # m
         self.declare_parameter('max_yaw_std', 0.15)       # rad
-        self.declare_parameter('global_loc_service', '/reinitialize_global_localization')
+        self.declare_parameter('max_drift', 0.15)         # m, allowed jump while confirming
+        self.declare_parameter('turns_before_rescatter', 3)
+        self.declare_parameter('timeout', 180.0)          # s
+        # AMCL tuning (<= 0 keeps AMCL's own value)
+        self.declare_parameter('laser_max_range', 1.5)    # m
+        self.declare_parameter('max_particles', 10000)
+        self.declare_parameter('min_particles', 2000)
+        self.declare_parameter('recovery_alpha_slow', 0.001)
+        self.declare_parameter('recovery_alpha_fast', 0.1)
 
-        p = lambda name: self.get_parameter(name).value
-        self.speed = p('angular_speed')
-        self.step_angle = p('step_angle')
-        self.pause = p('pause')
-        self.updates_per_stop = p('updates_per_stop')
-        self.laser_max_range = p('laser_max_range')
-        self.timeout = p('timeout')
-        self.max_xy_std = p('max_xy_std')
-        self.max_yaw_std = p('max_yaw_std')
+        self.p = lambda name: self.get_parameter(name).value
 
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.init_pub = self.create_publisher(PoseWithCovarianceStamped, '/initialpose', 10)
         self.create_subscription(PoseWithCovarianceStamped, '/amcl_pose', self.pose_cb, 10)
-        self.global_loc = self.create_client(Empty, p('global_loc_service'))
+        self.create_subscription(ParticleCloud, '/particle_cloud', self.cloud_cb,
+                                 qos_profile_sensor_data)
+        self.global_loc = self.create_client(Empty, '/reinitialize_global_localization')
         self.nomotion = self.create_client(Empty, '/request_nomotion_update')
         self.amcl_params = self.create_client(SetParameters, '/amcl/set_parameters')
 
         self.pose = None
+        self.cloud = None
 
     # ---------- helpers ----------
 
     def pose_cb(self, msg):
         self.pose = msg
+
+    def cloud_cb(self, msg):
+        self.cloud = msg
 
     def converged(self):
         if self.pose is None:
@@ -66,7 +73,11 @@ class AutoLocalize(Node):
         cov = self.pose.pose.covariance  # row-major 6x6: x, y, z, roll, pitch, yaw
         xy_std = math.sqrt(max(cov[0], cov[7]))
         yaw_std = math.sqrt(cov[35])
-        return xy_std < self.max_xy_std and yaw_std < self.max_yaw_std
+        return xy_std < self.p('max_xy_std') and yaw_std < self.p('max_yaw_std')
+
+    def xy(self):
+        pos = self.pose.pose.pose.position
+        return pos.x, pos.y
 
     def wait(self, seconds):
         end = time.time() + seconds
@@ -88,23 +99,44 @@ class AutoLocalize(Node):
             self.drive(0.0)
             self.wait(0.05)
 
+    def log_cloud(self, label):
+        if self.cloud is None or not self.cloud.particles:
+            self.get_logger().info(f'{label}: no particle cloud received yet')
+            return
+        xs = [pt.pose.position.x for pt in self.cloud.particles]
+        ys = [pt.pose.position.y for pt in self.cloud.particles]
+        self.get_logger().info(
+            f'{label}: {len(xs)} particles, x {min(xs):.1f}..{max(xs):.1f} m, '
+            f'y {min(ys):.1f}..{max(ys):.1f} m')
+
     # ---------- steps ----------
 
-    def limit_laser_range(self):
-        if self.laser_max_range <= 0:
+    def tune_amcl(self):
+        wanted = [
+            ('laser_max_range', Parameter.Type.DOUBLE, float(self.p('laser_max_range'))),
+            ('max_particles', Parameter.Type.INTEGER, int(self.p('max_particles'))),
+            ('min_particles', Parameter.Type.INTEGER, int(self.p('min_particles'))),
+            ('recovery_alpha_slow', Parameter.Type.DOUBLE, float(self.p('recovery_alpha_slow'))),
+            ('recovery_alpha_fast', Parameter.Type.DOUBLE, float(self.p('recovery_alpha_fast'))),
+        ]
+        wanted = [w for w in wanted if w[2] > 0]
+        if not wanted:
+            return
+        if not self.amcl_params.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warn('Cannot reach /amcl/set_parameters, AMCL left untuned.')
             return
         req = SetParameters.Request()
-        req.parameters = [
-            Parameter('laser_max_range', Parameter.Type.DOUBLE,
-                      float(self.laser_max_range)).to_parameter_msg()]
-        if not self.amcl_params.wait_for_service(timeout_sec=5.0):
-            self.get_logger().warn('Cannot reach /amcl/set_parameters, keeping laser range.')
-            return
+        req.parameters = [Parameter(n, t, v).to_parameter_msg() for n, t, v in wanted]
         result = self.call(self.amcl_params, req)
-        if result and result.results[0].successful:
-            self.get_logger().info(f'AMCL laser_max_range set to {self.laser_max_range} m')
-        else:
-            self.get_logger().warn('AMCL rejected laser_max_range, set it in the Nav2 params file.')
+        if result is None:
+            self.get_logger().warn('No answer from /amcl/set_parameters.')
+            return
+        for (name, _, value), res in zip(wanted, result.results):
+            if res.successful:
+                self.get_logger().info(f'AMCL {name} = {value}')
+            else:
+                self.get_logger().warn(f'AMCL rejected {name}: {res.reason} '
+                                       '-> set it in the Nav2 params file instead')
 
     def send_dummy_initial_pose(self):
         while self.init_pub.get_subscription_count() == 0:
@@ -117,19 +149,27 @@ class AutoLocalize(Node):
         self.init_pub.publish(msg)
         self.wait(1.0)
 
+    def scatter(self):
+        self.get_logger().info('Spreading particles over the whole map ...')
+        self.call(self.global_loc, Empty.Request())
+        self.pose = None
+        self.cloud = None
+        self.wait(0.5)
+
     def turn_step(self):
         """Rotate by step_angle (time-based), then stand still."""
-        end = time.time() + self.step_angle / self.speed
+        end = time.time() + self.p('step_angle') / self.p('angular_speed')
         while time.time() < end:
-            self.drive(self.speed)
+            self.drive(self.p('angular_speed'))
             self.wait(0.05)
         self.stop()
 
     def update_while_still(self):
-        """Let AMCL integrate several scans taken while the robot is not moving."""
+        """Let AMCL integrate a few scans taken while the robot is not moving."""
         self.wait(0.3)   # let the robot settle, get a fresh scan
-        per_update = max(self.pause / self.updates_per_stop, 0.25)
-        for _ in range(self.updates_per_stop):
+        n = max(int(self.p('updates_per_stop')), 1)
+        per_update = max(self.p('pause') / n, 0.25)
+        for _ in range(n):
             self.call(self.nomotion, Empty.Request())
             self.wait(per_update)   # next scan triggers the forced update
 
@@ -138,35 +178,54 @@ class AutoLocalize(Node):
         self.global_loc.wait_for_service()
         self.nomotion.wait_for_service()
 
-        self.limit_laser_range()
+        self.tune_amcl()
         self.send_dummy_initial_pose()
+        self.scatter()
 
-        self.get_logger().info('Spreading particles over the whole map ...')
-        self.call(self.global_loc, Empty.Request())
-        self.wait(0.5)
-        self.pose = None
-
-        steps_per_turn = math.ceil(2 * math.pi / self.step_angle)
+        steps_per_turn = math.ceil(2 * math.pi / self.p('step_angle'))
+        rescatter_after = steps_per_turn * int(self.p('turns_before_rescatter'))
         start = time.time()
-        step = 0
+        steps_since_scatter = 0
+        confirmed = 0          # consecutive converged + stable stops
+        anchor = None          # pose where convergence started
+
         self.get_logger().info('Localizing: turn, stop, update ...')
-        while rclpy.ok() and time.time() - start < self.timeout:
+        while rclpy.ok() and time.time() - start < self.p('timeout'):
             self.update_while_still()
-            if step >= steps_per_turn and self.converged():
-                break
+            if steps_since_scatter == 0:
+                self.log_cloud('After first update')
+
+            if self.converged():
+                if anchor is None:
+                    anchor = self.xy()
+                    self.get_logger().info(
+                        f'Candidate at x={anchor[0]:.2f}, y={anchor[1]:.2f}, confirming ...')
+                if math.dist(anchor, self.xy()) < self.p('max_drift'):
+                    confirmed += 1
+                else:   # jumped somewhere else -> start confirming again
+                    anchor, confirmed = self.xy(), 1
+                if confirmed > steps_per_turn:   # stable for a full extra turn
+                    break
+            else:
+                anchor, confirmed = None, 0
+                if steps_since_scatter >= rescatter_after:
+                    self.scatter()
+                    steps_since_scatter = 0
+                    continue
+
             self.turn_step()
-            step += 1
+            steps_since_scatter += 1
         self.stop()
 
-        if self.converged():
+        if confirmed > steps_per_turn:
             pose = self.pose.pose.pose
             yaw = 2 * math.atan2(pose.orientation.z, pose.orientation.w)
             self.get_logger().info(
-                f'Localized after {step} steps at x={pose.position.x:.2f}, '
-                f'y={pose.position.y:.2f}, yaw={math.degrees(yaw):.0f} deg')
+                f'Localized at x={pose.position.x:.2f}, y={pose.position.y:.2f}, '
+                f'yaw={math.degrees(yaw):.0f} deg')
         else:
             self.get_logger().warn(
-                'Not converged. Move the robot a bit and run this node again, '
+                'Not localized. Move the robot a bit and run this node again, '
                 'or set the pose manually with "2D Pose Estimate" in RViz.')
 
 
