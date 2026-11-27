@@ -107,12 +107,24 @@ class Explorer(Node):
         # [x_min, y_min, x_max, y_max] in map frame; empty = unbounded.
         # Use this to keep the robot inside the building (gaps in walls!).
         self.declare_parameter('bounds', [-100.0, -100.0, 100.0, 100.0])
+        # Automatic bounds: box around the walls that border the drivable
+        # area, plus a small margin. 'bounds' above stays as a hard cap.
+        self.declare_parameter('auto_bounds', True)
+        self.declare_parameter('auto_bounds_margin_m', 0.15)
+        self.declare_parameter('wall_near_m', 0.30)  # wall counts if this close to drivable space
         self.declare_parameter('save_prefix', 'lab_map')
         self.declare_parameter('free_max', 50) # treat cells with more than this as occupied
-        self.declare_parameter('inflate_meters', 0.1)
-        self.declare_parameter('min_goal_dist_meters',0.15)
+        self.declare_parameter('inflate_meters', 0.15)
+        # TurtleBot3 Burger footprint radius is ~0.105 m
+        self.declare_parameter('robot_radius_m', 0.11)
+        # must be larger than Nav2's xy_goal_tolerance (0.25 m in the TB3
+        # params), otherwise the goal "succeeds" instantly without moving
+        self.declare_parameter('min_goal_dist_meters', 0.35)
         self.declare_parameter('goal_timeout_s', 60.0) # TODO: tune, max map building time = 20 min
-        self.declare_parameter('max_repeat_goals', 3)  # same target picked N times -> blacklist
+        # attempts on the same area (counted over the WHOLE run, not just
+        # consecutively) before it is blacklisted
+        self.declare_parameter('max_repeat_goals', 3)
+        self.declare_parameter('attempt_radius_m', 0.5)
 
         p = self.get_parameter
         self.robot_frame = p('robot_frame').value
@@ -127,6 +139,12 @@ class Explorer(Node):
         self.min_goal_dist = p('min_goal_dist_meters').value
         self.goal_timeout = p('goal_timeout_s').value
         self.max_repeat = p('max_repeat_goals').value
+        self.robot_radius = p('robot_radius_m').value
+        self.attempt_radius = p('attempt_radius_m').value
+        if self.inflate_m < self.robot_radius:
+            self.get_logger().warn(
+                f'inflate_meters={self.inflate_m} < robot_radius_m={self.robot_radius}: '
+                f'using {self.robot_radius} m (Nav2 cannot plan through narrower gaps)')
 
         b = list(p('bounds').value)
         if len(b) != 4:
@@ -138,6 +156,11 @@ class Explorer(Node):
         else:
             self.bounds = []   # treated as unbounded
         self.get_logger().info(f'Bounds set to: {self.bounds}')
+
+        self.auto_bounds = p('auto_bounds').value
+        self.auto_margin = p('auto_bounds_margin_m').value
+        self.wall_near = p('wall_near_m').value
+        self.building_box = None   # [x_min, y_min, x_max, y_max], updated every select
 
         self.save_prefix = p('save_prefix').value
 
@@ -165,8 +188,7 @@ class Explorer(Node):
         self.goal_started = None  # clock time the active goal was sent
         self.cancelling = False
         self.timed_out = False
-        self.last_target = None  # for repeat detection
-        self.repeat_count = 0
+        self.attempts = []       # [[x, y, count]] per area, for repeat detection
         self.empty_ticks = 0
         self.done = False
 
@@ -209,7 +231,7 @@ class Explorer(Node):
     def _start_spin(self):
         self.state = State.SPIN
         goal = Spin.Goal()
-        goal.target_yaw = 0.0 # or 2.0 * math.pi
+        goal.target_yaw = 2.0 * math.pi
         goal.time_allowance = Duration(seconds=20).to_msg()
         self.get_logger().info('initial spin')
         fut = self.spin_client.send_goal_async(goal)
@@ -225,6 +247,8 @@ class Explorer(Node):
 
     def _tick_select(self): # selecting the next goal
         frontiers = self._find_frontiers()
+        if frontiers is None:
+            return
         if not frontiers:
             self.empty_ticks += 1
             if self.empty_ticks >= self.empty_ticks_needed:
@@ -236,19 +260,11 @@ class Explorer(Node):
 
         best = min(frontiers, key=lambda f: f['score'])
 
-        # same place chosen again and again (goal succeeds but the frontier
-        # never disappears) -> give up on it
-        if (self.last_target is not None and
-                math.hypot(best['goal'][0] - self.last_target[0],
-                           best['goal'][1] - self.last_target[1]) < self.blacklist_radius):
-            self.repeat_count += 1
-        else:
-            self.repeat_count = 0
-        self.last_target = best['goal']
-        if self.repeat_count >= self.max_repeat:
-            self.get_logger().warn('same frontier chosen repeatedly -> blacklist')
+        if self._count_attempt(best['goal']) > self.max_repeat:
+            self.get_logger().warn(
+                f'area around ({best["goal"][0]:.2f}, {best["goal"][1]:.2f}) '
+                f'tried {self.max_repeat}x -> blacklist')
             self.blacklist.append(best['goal'])
-            self.repeat_count = 0
             return  # reselect on next tick
 
         self.target = best['goal']
@@ -319,6 +335,15 @@ class Explorer(Node):
         self.timed_out = False
         self.state = State.SELECT
 
+    def _count_attempt(self, goal):
+        """Increment and return the attempt count for the area around goal."""
+        for a in self.attempts:
+            if math.hypot(goal[0] - a[0], goal[1] - a[1]) < self.attempt_radius:
+                a[2] += 1
+                return a[2]
+        self.attempts.append([goal[0], goal[1], 1])
+        return 1
+
     def _blacklist_target(self):
         if self.target is not None:
             self.blacklist.append(self.target)
@@ -330,22 +355,25 @@ class Explorer(Node):
         return data, m.info
 
     def _find_frontiers(self):
+        """List of candidate dicts, [] if none, None on a transient error."""
         if self.map_msg is None:
             self.get_logger().warn('Frontiers not found: map_msg is None')
-            return []
+            return None
         rxy = self._robot_xy()
         if rxy is None:
             self.get_logger().warn('Frontiers not found: coordinates could not be determined')
-            return []
+            return None
         data, info = self._grid()
-        for clearance in (self.inflate_m, 0.0):
+        # never plan with less clearance than the robot's own radius
+        relaxed = self.robot_radius
+        for clearance in (max(self.inflate_m, relaxed), relaxed):
             res = info.resolution
             origin = (info.origin.position.x, info.origin.position.y)
 
             dist = reachable_distance(data, res, origin, rxy, self.free_max, clearance)
             if dist is None:
                 self.get_logger().warn('Frontiers not found: robot outside map')
-                return []
+                return None
 
             raw = frontier_mask(data, self.free_max)
             reach = np.isfinite(dist)
@@ -355,6 +383,8 @@ class Explorer(Node):
             labels, n = ndimage.label(mask, structure=np.ones((3, 3)))
             min_cells = max(1, int(self.min_frontier_m / res))
             _, (ny, nx) = ndimage.distance_transform_edt(~reach, return_indices=True)
+            if self.auto_bounds:
+                self.building_box = self._building_box(data, reach, origin, res, clearance)
 
             result = []
             for lbl in range(1, n + 1):
@@ -379,8 +409,9 @@ class Explorer(Node):
                 f'{int(mask.sum())} near drivable ({int(reach.sum())} drivable) '
                 f'-> {n} clusters, {len(result)} usable')
             if result:
-                if clearance != self.inflate_m:
-                    self.get_logger().warn('no frontier with normal clearance -> relaxed to 0 m')
+                if clearance < max(self.inflate_m, relaxed):
+                    self.get_logger().warn(
+                        f'no frontier with normal clearance -> relaxed to {relaxed:.2f} m')
                 return result
         return []
 
@@ -395,11 +426,36 @@ class Explorer(Node):
         win = frontier_mask(data, self.free_max)[max(0, iy - 3):iy + 4, max(0, ix - 3):ix + 4]
         return bool(win.any())
 
+    def _building_box(self, data, reach, origin, res, clearance):
+        """Bounding box of wall cells that border the drivable area.
+
+        Only walls next to space the robot can reach are counted, so
+        furniture seen far away through a small gap does not grow the box.
+        Returns None while too few walls are known (then only 'bounds' applies).
+        """
+        k = int(math.ceil((clearance + self.wall_near) / res))
+        near = ndimage.binary_dilation(reach, structure=np.ones((3, 3)), iterations=k)
+        ys, xs = np.nonzero((data >= self.free_max) & near)
+        if len(xs) < 20:
+            return None
+        m = self.auto_margin
+        box = [origin[0] + xs.min() * res - m, origin[1] + ys.min() * res - m,
+               origin[0] + (xs.max() + 1) * res + m, origin[1] + (ys.max() + 1) * res + m]
+        self.get_logger().info(
+            'building box: [{:.2f}, {:.2f}, {:.2f}, {:.2f}]'.format(*box),
+            throttle_duration_sec=10.0)
+        return box
+
     def _allowed(self, x, y):
 
-        # cell passes if it is inside [bounds]
+        # hard cap from the 'bounds' parameter
         if len(self.bounds) == 4:
             xmin, ymin, xmax, ymax = self.bounds
+            if not (xmin <= x <= xmax and ymin <= y <= ymax):
+                return False
+        # automatic bounds learned from the walls seen so far
+        if self.building_box is not None:
+            xmin, ymin, xmax, ymax = self.building_box
             if not (xmin <= x <= xmax and ymin <= y <= ymax):
                 return False
         return all(math.hypot(x - bx, y - by) > self.blacklist_radius
@@ -416,25 +472,78 @@ class Explorer(Node):
 
     # ================= saving ============================================
     def save_map(self):
-        """Call after the spin loop ends (blocking calls are fine here)."""
-        pbstream = f'{self.save_prefix}.pbstream'
+        """Call after the spin loop ends (blocking calls are fine here).
 
+        Order: .pgm/.yaml first (needs a live /map), then finish the
+        Cartographer trajectory and write the .pbstream. Every step is
+        checked; nothing is reported as saved unless the file exists.
+        Returns True only if all three files were written.
+        """
+        log = self.get_logger()
+        prefix = os.path.abspath(os.path.expanduser(self.save_prefix))
+        out_dir = os.path.dirname(prefix)
+
+        # map_saver / GraphicsMagick do NOT create missing directories and
+        # only report "Magick: Unable to open file" -> make sure it exists
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except OSError as e:
+            log.error(f'cannot create map directory {out_dir}: {e}')
+            return False
+        if not os.access(out_dir, os.W_OK):
+            log.error(f'map directory {out_dir} is not writable '
+                      f'(owned by root from an earlier sudo/docker run?)')
+            return False
+        for ext in ('.pgm', '.yaml', '.pbstream'):
+            f = prefix + ext
+            if os.path.exists(f) and not os.access(f, os.W_OK):
+                log.error(f'{f} exists and is read-only -> remove it or pick another prefix')
+                return False
+
+        ok = True
+
+        # 1) .yaml/.pgm for Nav2 map_server + AMCL
+        proc = subprocess.run(['ros2', 'run', 'nav2_map_server', 'map_saver_cli',
+                               '-f', prefix], check=False)
+        if proc.returncode != 0 or not os.path.isfile(prefix + '.pgm'):
+            log.error(f'map_saver_cli failed (exit code {proc.returncode})')
+            ok = False
+
+        # 2) .pbstream (path is on the machine running cartographer_node)
         fin = self.create_client(FinishTrajectory, '/finish_trajectory')
         wr = self.create_client(WriteState, '/write_state')
-        if fin.wait_for_service(5.0):
+        if fin.wait_for_service(timeout_sec=5.0):
             req = FinishTrajectory.Request()
             req.trajectory_id = 0
-            self._call(fin, req)
-        if wr.wait_for_service(5.0):
-            req = WriteState.Request()
-            req.filename = pbstream   # path is on the machine running cartographer_node
-            req.include_unfinished_submaps = True
-            self._call(wr, req)
+            res = self._call(fin, req)
+            if res is None or res.status.code != 0:
+                log.warn(f'finish_trajectory: {self._status_text(res)}')
+        else:
+            log.warn('/finish_trajectory not available')
 
-        # .yaml/.pgm for Nav2 map_server + AMCL
-        subprocess.run(['ros2', 'run', 'nav2_map_server', 'map_saver_cli',
-                        '-f', self.save_prefix], check=False)
-        self.get_logger().info(f'saved {pbstream} and {self.save_prefix}.yaml/.pgm')
+        if wr.wait_for_service(timeout_sec=5.0):
+            req = WriteState.Request()
+            req.filename = prefix + '.pbstream'
+            req.include_unfinished_submaps = True
+            res = self._call(wr, req)
+            if res is None or res.status.code != 0:
+                log.error(f'write_state: {self._status_text(res)}')
+                ok = False
+        else:
+            log.error('/write_state not available -> no .pbstream')
+            ok = False
+
+        if ok:
+            log.info(f'saved {prefix}.pbstream and {prefix}.yaml/.pgm')
+        else:
+            log.error(f'map saving incomplete, check files with prefix {prefix}')
+        return ok
+
+    @staticmethod
+    def _status_text(res):
+        if res is None:
+            return 'no response (timeout)'
+        return f'code {res.status.code}: {res.status.message}'
 
     def _call(self, client, req):
         fut = client.call_async(req)
