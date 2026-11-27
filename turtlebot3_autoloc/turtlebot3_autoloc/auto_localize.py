@@ -44,6 +44,16 @@ class AutoLocalize(Node):
         self.declare_parameter('min_particles', 2000)
         self.declare_parameter('recovery_alpha_slow', 0.001)
         self.declare_parameter('recovery_alpha_fast', 0.1)
+        # debugging (see loc_debug.py)
+        self.declare_parameter('debug', True)
+        self.declare_parameter('debug_dir', '~/.ros/autoloc_debug')
+        self.declare_parameter('debug_png', True)            # needs matplotlib
+        self.declare_parameter('debug_global_search', True)  # brute-force scan match
+        self.declare_parameter('scan_topic', '/scan')
+        # optional ground truth in the map frame (nan = unknown), e.g. read off RViz
+        self.declare_parameter('true_x', float('nan'))
+        self.declare_parameter('true_y', float('nan'))
+        self.declare_parameter('true_yaw', float('nan'))   # rad
 
         self.p = lambda name: self.get_parameter(name).value
 
@@ -58,6 +68,11 @@ class AutoLocalize(Node):
 
         self.pose = None
         self.cloud = None
+
+        self.dbg = None
+        if self.p('debug'):
+            from turtlebot3_autoloc.loc_debug import LocalizationDebugger
+            self.dbg = LocalizationDebugger(self)
 
     # ---------- helpers ----------
 
@@ -179,6 +194,8 @@ class AutoLocalize(Node):
         self.nomotion.wait_for_service()
 
         self.tune_amcl()
+        if self.dbg:
+            self.dbg.setup()
         self.send_dummy_initial_pose()
         self.scatter()
 
@@ -188,12 +205,16 @@ class AutoLocalize(Node):
         steps_since_scatter = 0
         confirmed = 0          # consecutive converged + stable stops
         anchor = None          # pose where convergence started
+        step = 0
 
         self.get_logger().info('Localizing: turn, stop, update ...')
         while rclpy.ok() and time.time() - start < self.p('timeout'):
             self.update_while_still()
             if steps_since_scatter == 0:
                 self.log_cloud('After first update')
+            if self.dbg:
+                self.dbg.on_stop(step, 'after scatter' if steps_since_scatter == 0 else '')
+            step += 1
 
             if self.converged():
                 if anchor is None:
@@ -209,6 +230,8 @@ class AutoLocalize(Node):
             else:
                 anchor, confirmed = None, 0
                 if steps_since_scatter >= rescatter_after:
+                    self.get_logger().warn(
+                        f'Not converged after {steps_since_scatter} steps, re-scattering')
                     self.scatter()
                     steps_since_scatter = 0
                     continue
@@ -227,6 +250,8 @@ class AutoLocalize(Node):
             self.get_logger().warn(
                 'Not localized. Move the robot a bit and run this node again, '
                 'or set the pose manually with "2D Pose Estimate" in RViz.')
+        if self.dbg:
+            self.dbg.finish(confirmed > steps_per_turn)
 
 
 def main():
